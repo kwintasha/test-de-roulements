@@ -1,0 +1,354 @@
+#include <U8x8lib.h>
+#include <OneButton.h>
+
+U8X8_SSD1306_128X64_NONAME_HW_I2C u8x8(/* reset=*/ U8X8_PIN_NONE);
+
+#define BROCHE_INTERRUPTION 2
+#define BROCHE_AMPOULE 7
+volatile const int buttonPin = 3;
+
+volatile unsigned long compteurFrontsMontants = 0; //Compteur brut : compte tout les tours faits
+volatile unsigned long compteurFiltre = 0; //Compteur filtré : compte tout les tours dès que la limite a été dépassée 1 fois
+volatile unsigned long compteurDecel = 0; //Compteur décélération : compte tout les tours dès que la limite a été dépassée 1 fois ET que V(n) > V(n+1).
+
+volatile unsigned long dernierTempsFrontMontant = 0;
+volatile unsigned long tempsEntreFrontsMontants = 0;
+volatile float valvitessemax = 0.0;
+volatile float vitesseTour = 0.0;
+volatile int etat = 0;
+volatile int ancienEtat;
+volatile unsigned long tempsChoixFin;
+
+volatile unsigned long memoireCompteurs[3][3];
+volatile bool wasPressed = false;
+volatile bool limite = false;
+
+OneButton myButton(buttonPin, false);
+
+void setup() {
+  u8x8.begin();
+  u8x8.setFlipMode(1);
+  pinMode(BROCHE_INTERRUPTION, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(BROCHE_INTERRUPTION), gestionnaireInterruption, RISING);
+  Serial.begin(9600);
+  pinMode(BROCHE_AMPOULE, OUTPUT);
+
+  /*
+  la fonction attach.click ne marche pas, on a crée la fonction UpdateButton() à la place.
+  myButton.attachClick(buttonClick);
+  paramètres que nous avons ajoutés pour gérer le attachClick, ça n'a pas aidé.
+  myButton.setClickTicks(1);
+  myButton.setDebounceTicks(50);
+  */
+
+}
+
+void initialisation() { //mise à 0 des valeurs de test
+  dernierTempsFrontMontant = 0;
+  tempsEntreFrontsMontants = 0;
+  vitesseTour = 0.0;
+  compteurFrontsMontants = 0;
+  compteurFiltre = 0;
+  compteurDecel = 0;
+  limite = false;
+  valvitessemax = 0.0;
+}
+
+void buttonUpdate() {
+  /*
+  Débogage du problème entre le bouton et les états
+  Serial.println("etat: "+ String(myButton.isIdle())+" wasPressed: "+String(wasPressed));
+  myButton.reset();
+  Serial.println(etat);
+  */
+
+  //Tout les Serial.println() étaient du déboggage pour voir les problèmes sur la console entre le bouton et les états
+  if ((!myButton.isIdle()) && (!wasPressed)){
+    digitalWrite(BROCHE_AMPOULE, HIGH);
+    delay(500);
+    digitalWrite(BROCHE_AMPOULE, LOW);
+    u8x8.clear();
+    wasPressed = true ;
+  
+    switch (etat) {
+      case 0:
+        u8x8.clear();
+        //Serial.println("Passage: 0 -> 1");
+        initialisation();
+        etat = 1;
+        break;
+
+      case 1:
+        //Serial.println("Passage: 1 -> 10");
+        ancienEtat = etat;
+        if (limite){
+          etat = 10;}
+        else{
+          etat = 11;}
+        tempsChoixFin = millis() + 10000;
+        break;
+
+      case 2:
+        //Serial.println("Passage: 2 -> 10");
+        ancienEtat = etat;
+        if (limite){
+          etat = 10;}
+        else{
+          etat = 11;}
+        tempsChoixFin = millis() + 10000;
+        break;
+
+      case 3:
+        //Serial.println("Passage: 3 -> 10");
+        ancienEtat = etat;
+        if (limite){
+          etat = 10;}
+        else{
+          etat = 11;}
+        tempsChoixFin = millis() + 10000;
+        break;
+
+      case 4:
+        //Serial.println("Passage: 4 -> 5");
+        initialisation();
+        etat = 5;
+        break;
+
+      case 5:
+        etat = 0;
+        break;
+
+      case 10:
+        //Serial.println("Passage: etat ++");
+        memoireCompteurs[ancienEtat - 1][0] = compteurFrontsMontants;
+        memoireCompteurs[ancienEtat - 1][1] = compteurFiltre;
+        memoireCompteurs[ancienEtat - 1][2] = compteurDecel;
+        initialisation();
+        etat = ancienEtat + 1;
+        break;
+
+      case 11:
+        //Serial.println("Essai recommencé");
+        initialisation();
+        etat = ancienEtat;
+        break;
+
+      default:
+        break;
+    }
+  }
+  else if (myButton.isIdle() && wasPressed){
+    wasPressed = false;
+  }
+
+}
+
+void afficherEtat() {
+  /*
+  Si t!=0 et qu'on a effecté 1 tour complet (càd 2 fronts montants minimum) ---> calculer la vitesse du tour
+  Le CompteurFrontsMontant > 1 sert à ne pase fausser les résultats
+  */
+  if ((tempsEntreFrontsMontants != 0) && (compteurFrontsMontants > 1)) {
+    vitesseTour = 1000.0 / tempsEntreFrontsMontants;
+  } else {
+    vitesseTour = 0.0;
+  }
+  
+  //Vitesse minimale pour cptfiltre de 600 t/s
+  if (vitesseTour > 600.0) { 
+    limite = true;
+  //Mise à jour de la vitesse maximale
+    if (vitesseTour > valvitessemax) { //
+      valvitessemax = vitesseTour;
+    }
+  }
+
+  //Affichage des valeurs sur l'écran
+  u8x8.setFont(u8x8_font_amstrad_cpc_extended_r);
+  //u8x8.setContrast(100); //Choix optionnel de la luminosité du texte  
+
+  u8x8.setCursor(0, 0);
+  u8x8.println("ESSAI " + String(etat)+" /3");
+
+  u8x8.setCursor(0, 1);
+  u8x8.println("vitesse:" + String(vitesseTour));
+
+  u8x8.setCursor(0, 2);
+  u8x8.println("Vmax:" + String(valvitessemax, 2));
+
+  float tempsEnSecondes = tempsEntreFrontsMontants / 1000.0;
+  u8x8.setCursor(0, 3);
+  u8x8.println("temps 1t:" + String(tempsEnSecondes, 2));
+
+  u8x8.setCursor(0, 4);
+  u8x8.println("cpt brut:" + String(compteurFrontsMontants));
+
+  u8x8.setCursor(0, 5);
+  u8x8.println("cpt filtre:" + String(compteurFiltre));
+
+  u8x8.setCursor(0, 6);
+  u8x8.println("cpt decel:" + String(compteurDecel));
+}
+
+
+void afficherTotal(){
+  //Fonction pour l'avant dernier écran où on affiche le nb de tours en décélération de chaque essai
+  u8x8.setCursor(0, 0);
+  u8x8.println("Recap nb decel");
+
+  u8x8.setCursor(0, 1);
+  u8x8.println("Essai 1 :");
+  u8x8.setCursor(0, 2);
+  u8x8.println(String(memoireCompteurs[0][2]));
+
+  u8x8.setCursor(0, 3);
+  u8x8.println("Essai 2 :");
+  u8x8.setCursor(0, 4);
+  u8x8.println(String(memoireCompteurs[1][2]));
+
+  u8x8.setCursor(0, 5);
+  u8x8.println("Essai 3 :");
+  u8x8.setCursor(0, 6);
+  u8x8.println(String(memoireCompteurs[2][2]));
+}
+
+
+void afficherMoyenne() {
+  //Fonction pour le dernier écran où on affiche la moyenne de chaque compteur des 3 essais
+  u8x8.setCursor(0, 0);
+  u8x8.println("M.CptBrut :");
+  float moyennedCptBrut = (float)(memoireCompteurs[0][0] + memoireCompteurs[1][0] + memoireCompteurs[2][0]) / 3;
+  u8x8.setCursor(0, 1);
+  u8x8.println(String(moyennedCptBrut));
+
+  u8x8.setCursor(0, 2);
+  u8x8.println("M.CptFiltre :");
+  float moyennedCptFiltre = (float)(memoireCompteurs[0][1] + memoireCompteurs[1][1] + memoireCompteurs[2][1]) / 3;
+  u8x8.setCursor(0, 3);
+  u8x8.println(String(moyennedCptFiltre));
+
+  u8x8.setCursor(0, 4);
+  u8x8.println("M.CptDecel :");
+  float moyennedCptDecel = (float)(memoireCompteurs[0][2] + memoireCompteurs[1][2] + memoireCompteurs[2][2]) / 3;
+  u8x8.setCursor(0, 5);
+  u8x8.println(String(moyennedCptDecel));
+}
+
+
+void afficherChoix() {
+  /*
+  Fonction pour définir la fenêtre de validation d'essais par appui du bouton
+  S'il n'y a pas d'appui de bouton pendant 10s, il faut recommencer l'essai
+  */
+
+  if (millis() < tempsChoixFin) {
+    u8x8.clear();
+    u8x8.setFont(u8x8_font_amstrad_cpc_extended_r);
+    u8x8.setCursor(0, 0);
+    u8x8.println("Voulez-vous \nvalider cet \nessai ?\noui = appui \nnon = attente\nTemps restant :\n" + String(tempsChoixFin - millis()));
+  }
+  else {
+    Serial.println("Retour: ");
+    initialisation();
+    etat = ancienEtat;
+    u8x8.clear();
+  }
+}
+
+void afficherErreur(){
+  //Cas où la limite n'a pas été atteinte, donc que l'essais n'est pas valide --> il faut recommencer l'essai
+  u8x8.setFont(u8x8_font_amstrad_cpc_extended_r);
+  u8x8.setCursor(0, 0);
+  u8x8.println("! RESTART !\n \nVmin non atteint\ndonc appuie sur\nle bouton puis\nrelance le\nroulement.");
+  }
+
+void bienvenue(){
+  //Ecran d'acceuil pour l'utilisateur
+  u8x8.setFont(u8x8_font_amstrad_cpc_extended_r);
+  u8x8.setCursor(0, 0);
+  u8x8.println("! START !\n \nAppuie sur le \nbouton puis\nlance le\nroulement.");
+}
+
+
+void loop() {
+  /*
+  Loop pour définir chaque écran du test
+  Tous les Serial.println() étaient du déboggage pour voir les problèmes sur la console entre le bouton et les états
+  */
+  myButton.tick();
+  switch (etat) {
+    case 0:
+      //Serial.println("etat 0");
+      bienvenue();
+      buttonUpdate();
+      break;
+      
+    case 1:
+      //Serial.println("etat 1"); 
+      afficherEtat();
+      buttonUpdate();
+      break;
+
+    case 2:
+      //Serial.println("etat 2");
+      afficherEtat();
+      buttonUpdate();
+      break;
+
+    case 3:
+      //Serial.println("etat 3");
+      afficherEtat();
+      buttonUpdate();
+      break;
+
+    case 4:
+      //Serial.println("etat 4");
+      afficherMoyenne();
+      buttonUpdate();
+      break;
+
+    case 5:
+      //Serial.println("etat 5");
+      afficherTotal();
+      buttonUpdate();
+      break;
+
+    case 10:
+      //Serial.println("etat CHOIX");
+      afficherChoix();
+      buttonUpdate();
+      break;
+
+    case 11:
+      //Serial.println("etat RESTART");
+      afficherErreur();
+      buttonUpdate();
+      break;
+
+    default:
+      break;
+  }
+  delay(100);
+}
+
+void gestionnaireInterruption() {
+  unsigned long tempsActuel = millis();
+
+  // Vérifier si le temps du dernier front montant a été initialisé
+  if (dernierTempsFrontMontant != 0) {
+    // Temps pour faire 1 tour, sert pour le calcul de la vitesse du tour
+    tempsEntreFrontsMontants = tempsActuel - dernierTempsFrontMontant;
+    
+    // Incrémentations des compteurs
+    compteurFrontsMontants++;
+    if (limite) {
+      compteurFiltre++;
+    }
+    if (limite && vitesseTour < valvitessemax) {
+      compteurDecel++;
+    }
+  }
+
+  // Mettre à jour le temps du dernier front montant
+  dernierTempsFrontMontant = tempsActuel;
+}
